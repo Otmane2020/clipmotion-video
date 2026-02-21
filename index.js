@@ -17,46 +17,65 @@ function setupApp({ remotionBundleUrl }: { remotionBundleUrl: string }) {
     rendersDir,
   });
 
-  // Host renders on /renders
-  app.use("/renders", express.static(rendersDir));
   app.use(express.json());
+  app.use("/renders", express.static(rendersDir));
 
-  // Endpoint to create a new job
+  // CREATE JOB
   app.post("/renders", async (req, res) => {
     const titleText = req.body?.titleText || "Hello, world!";
 
     if (typeof titleText !== "string") {
-      res.status(400).json({ message: "titleText must be a string" });
-      return;
+      return res.status(400).json({ message: "titleText must be a string" });
     }
 
     const jobId = queue.createJob({ titleText });
 
-    res.json({ jobId });
+    // timeout safety (Railway protection)
+    setTimeout(() => {
+      const job = queue.jobs.get(jobId);
+      if (!job) return;
+
+      if (job.status === "queued" || job.status === "in-progress") {
+        job.status = "failed";
+        job.error = "timeout";
+      }
+    }, 1000 * 60 * 8);
+
+    res.json({
+      jobId,
+      status: "queued",
+    });
   });
 
-  // Endpoint to get a job status
+  // GET STATUS (polling safe format)
   app.get("/renders/:jobId", (req, res) => {
     const jobId = req.params.jobId;
     const job = queue.jobs.get(jobId);
 
-    res.json(job);
+    if (!job) {
+      return res.status(404).json({ status: "not-found" });
+    }
+
+    res.json({
+      id: job.id ?? jobId,
+      status: job.status,
+      progress: job.progress ?? 0,
+      output: job.output ?? null,
+      error: job.error ?? null,
+    });
   });
 
-  // Endpoint to cancel a job
+  // CANCEL
   app.delete("/renders/:jobId", (req, res) => {
     const jobId = req.params.jobId;
-
     const job = queue.jobs.get(jobId);
 
     if (!job) {
-      res.status(404).json({ message: "Job not found" });
-      return;
+      return res.status(404).json({ message: "Job not found" });
     }
 
     if (job.status !== "queued" && job.status !== "in-progress") {
-      res.status(400).json({ message: "Job is not cancellable" });
-      return;
+      return res.status(400).json({ message: "Job is not cancellable" });
     }
 
     job.cancel();
